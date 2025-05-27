@@ -66,7 +66,27 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		_createPipeline()
 		_createSourcesDirectory()
 		_clean()
+		
+		DownloadManager.shared.handleBackgroundSessionEvents()
+		
 		return true
+	}
+	
+	func application(
+		_ application: UIApplication,
+		handleEventsForBackgroundURLSession identifier: String,
+		completionHandler: @escaping () -> Void
+	) {
+		DownloadManager.shared.backgroundCompletionHandler = completionHandler
+	}
+	
+	func applicationDidEnterBackground(_ application: UIApplication) {
+		print("app entered background")
+	}
+	
+	func applicationWillEnterForeground(_ application: UIApplication) {
+		DownloadManager.shared.handleBackgroundSessionEvents()
+		print("app entering foreground")
 	}
 	
 	private func _createPipeline() {

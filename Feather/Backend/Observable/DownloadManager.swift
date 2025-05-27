@@ -7,7 +7,7 @@
 
 import Foundation
 import Combine
-import UIKit.UIImpactFeedbackGenerator
+import UIKit
 
 class Download: Identifiable, @unchecked Sendable {
 	@Published var progress: Double = 0.0
@@ -51,12 +51,26 @@ class DownloadManager: NSObject, ObservableObject {
 	}
 	
     private var _session: URLSession!
+	private let backgroundSessionIdentifier = "thewonderofyou.Feather.downloads"
+	
+	var backgroundCompletionHandler: (() -> Void)?
     
     override init() {
         super.init()
-        let configuration = URLSessionConfiguration.default
-        _session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        setupBackgroundSession()
     }
+	
+	private func setupBackgroundSession() {
+		let configuration = URLSessionConfiguration.background(withIdentifier: backgroundSessionIdentifier)
+		configuration.isDiscretionary = false
+		configuration.sessionSendsLaunchEvents = true
+		configuration.shouldUseExtendedBackgroundIdleMode = true
+		
+		configuration.timeoutIntervalForRequest = 0
+		configuration.timeoutIntervalForResource = 0
+		
+		_session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+	}
     
     func startDownload(
 		from url: URL,
@@ -121,6 +135,53 @@ class DownloadManager: NSObject, ObservableObject {
 	func getDownloadTask(by task: URLSessionDownloadTask) -> Download? {
 		return downloads.first(where: { $0.task == task })
 	}
+	
+	func handleBackgroundSessionEvents() {
+		_session.getTasksWithCompletionHandler { [weak self] (dataTasks, uploadTasks, downloadTasks) in
+			guard let self = self else { return }
+			
+			for downloadTask in downloadTasks {
+				if let existingDownload = self.getDownloadTask(by: downloadTask) {
+					if downloadTask.state == .running {
+						DispatchQueue.main.async {
+							existingDownload.progress = downloadTask.progress.fractionCompleted
+							existingDownload.bytesDownloaded = downloadTask.countOfBytesReceived
+							existingDownload.totalBytes = downloadTask.countOfBytesExpectedToReceive
+						}
+					}
+				} else if let originalURL = downloadTask.originalRequest?.url {
+					let download = Download(id: UUID().uuidString, url: originalURL)
+					download.task = downloadTask
+					
+					if downloadTask.state == .running {
+						download.progress = downloadTask.progress.fractionCompleted
+						download.bytesDownloaded = downloadTask.countOfBytesReceived
+						download.totalBytes = downloadTask.countOfBytesExpectedToReceive
+					}
+					
+					DispatchQueue.main.async {
+						self.downloads.append(download)
+					}
+				}
+			}
+		}
+	}
+	
+	func pauseAllDownloads() {
+		for download in downloads {
+			download.task?.suspend()
+		}
+	}
+	
+	func resumeAllDownloads() {
+		for download in downloads {
+			download.task?.resume()
+		}
+	}
+	
+	var isBackgroundDownloadSupported: Bool {
+		return UIApplication.shared.backgroundRefreshStatus == .available
+	}
 }
 
 extension DownloadManager: URLSessionDownloadDelegate {
@@ -149,7 +210,6 @@ extension DownloadManager: URLSessionDownloadDelegate {
 		do {
 			try FileManager.default.createDirectoryIfNeeded(at: customTempDir)
 			
-			// Use the server-suggested filename if available, otherwise fallback
 			let suggestedFileName = downloadTask.response?.suggestedFilename ?? download.fileName
 			let destinationURL = customTempDir.appendingPathComponent(suggestedFileName)
 			
@@ -158,7 +218,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
 			
 			try handlePachageFile(url: destinationURL, dl: download)
 		} catch {
-			print("Error handling downloaded file: \(error.localizedDescription)")
+			print("error handling downloaded file: \(error.localizedDescription)")
 		}
 	}
     
@@ -189,4 +249,11 @@ extension DownloadManager: URLSessionDownloadDelegate {
 			}
 		}
     }
+	
+	func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+		DispatchQueue.main.async {
+			self.backgroundCompletionHandler?()
+			self.backgroundCompletionHandler = nil
+		}
+	}
 }
